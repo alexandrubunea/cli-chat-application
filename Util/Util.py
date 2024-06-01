@@ -84,7 +84,7 @@ def convert_operation_to_code(operation: str) -> str:
             return "6"
         case "quit":
             return "7"
-        case "recieve_chat_request":
+        case "receive_chat_request":
             return "8"
 
 
@@ -107,4 +107,8 @@ def convert_code_to_operation_str(code: str) -> str:
         case "7":
             return "quit"
         case "8":
-            return "recieve_chat_request"
+            return "receive_chat_request"
+
+
+def generate_random_sha_256() -> str:
+    return hashlib.sha256(secrets.token_bytes(128)).hexdigest()

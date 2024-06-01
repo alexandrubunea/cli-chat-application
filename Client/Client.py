@@ -101,7 +101,7 @@ class Client:
                 # or basically something that the user requested, then it will be saved in "last_response"
                 # but if it's not, and it's something that the server is sending to the user than that will be handled
                 # in a specific way, because is something more "complex"
-                encrypted_data = soc.recv(256)
+                encrypted_data = soc.recv(512)
                 if encrypted_data == b'0' or encrypted_data == b'1':  # Boring response
                     self.last_response = int(encrypted_data.decode("utf-8"))
                     continue
@@ -116,21 +116,21 @@ class Client:
                 cmd = convert_code_to_operation_str(cmd)
 
                 match cmd:
-                    case "recieve_chat_request":
+                    case "receive_chat_request":
                         if ":" not in param:  # Maybe, somehow, its possible?!
                             print("Something went really wrong, please try again later")
 
                         sender_addr, sender_name = param.split(":", 1)
                         self.chat_requests.add((sender_addr, sender_name))
 
-                        print(f"* You recieved a chat request from {sender_name}. Type \"accept {sender_name}\""
+                        print(f"* You received a chat request from {sender_name}. Type \"accept {sender_name}\""
                               f" to chat with them!")
 
             except (socket.timeout, socket.error) as e:
                 print(f"* Connection ended: {e}")
                 break
 
-    def __recieve_res_from_req__(self) -> int:
+    def __receive_res_from_req__(self) -> int:
         """
         Handles the "boring" responses from the server, and ensurses that the data had arrived.
         :return: The response from the server.
@@ -200,7 +200,7 @@ class Client:
                     soc.sendall(req_encrypted)
 
                     # Get confirmation from the server
-                    res = self.__recieve_res_from_req__()
+                    res = self.__receive_res_from_req__()
 
                     if res:
                         self.username = param
@@ -218,7 +218,7 @@ class Client:
                     soc.sendall(req_encrypted)
 
                     # Get the result from the server, 1 = users is online, 0 = user is not online
-                    res = self.__recieve_res_from_req__()
+                    res = self.__receive_res_from_req__()
 
                     status = "online" if res else "offline"
                     print(f"* User {param} is {status}.")
@@ -240,7 +240,7 @@ class Client:
                     req_encrypted = aes_encrypt_str(req, secret_key)
                     soc.sendall(req_encrypted)
 
-                    res = self.__recieve_res_from_req__()
+                    res = self.__receive_res_from_req__()
 
                     if res:
                         print(f"* You have sent a chat request to {param}.")

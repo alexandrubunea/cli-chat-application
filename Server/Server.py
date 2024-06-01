@@ -8,7 +8,7 @@ import secrets
 
 from Security.DHKeys import P_KEY, G_KEY
 from Util.Util import sha_256_int, aes_decrypt_to_str, convert_code_to_operation_str, convert_operation_to_code, \
-    aes_encrypt_str
+    aes_encrypt_str, generate_random_sha_256
 
 
 class Server:
@@ -66,16 +66,17 @@ class Server:
     async def __handle_client__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """
         Handles the connection with a client.
-        :param reader: Reader used for reciving data.
+        :param reader: Reader used for receiving data.
         :param writer: Writer used for sending data.
         :return: None
         """
 
         sha_256_secret_key = await self.__secure_connection__(reader, writer)
-        user_addrs = writer.get_extra_info("peername")[0]  # Gets the ip of the user
+        user_identity = generate_random_sha_256()  # Gives the user an identity, to avoid confusions in the future
+        user_ip = writer.get_extra_info("peername")[0]
 
         if sha_256_secret_key == b'0':  # This mean it was just an availability check, connection can be dropped
-            self.__print_debug__(f"Connection tested by {user_addrs}")
+            self.__print_debug__(f"Connection tested by {user_ip}")
             return
 
         # Run until the client closes the connection
@@ -95,13 +96,13 @@ class Server:
                 cmd = data
             cmd = convert_code_to_operation_str(cmd)
 
-            self.__print_debug__(f"Command {cmd} from {user_addrs} with param {param}")
+            self.__print_debug__(f"Command {cmd} from {user_ip} with param {param}")
 
             match cmd:
                 case "change_username":
                     current_username, new_username = param.split(":")
                     res = self.__change_user_username__(current_username, new_username,
-                                                        user_addrs, writer, sha_256_secret_key)
+                                                        user_identity, writer, sha_256_secret_key)
                     writer.write(res)
                     await writer.drain()
 
@@ -112,13 +113,13 @@ class Server:
                     await writer.drain()
 
                 case "chat_with_user":
-                    from_user = self.addrs[user_addrs]
-                    res = await self.__send_chat_request__(from_user, user_addrs, param)
+                    from_user = self.addrs[user_identity]
+                    res = await self.__send_chat_request__(from_user, user_identity, param)
 
                     writer.write(res)
                     await writer.drain()
 
-                case "view_chat_requests":  # used to update on client side
+                case "view_chat_requests":  # Used to update on client side
                     ...
                 case "accept_chat_request":
                     ...
@@ -128,7 +129,7 @@ class Server:
         writer.close()
         await writer.wait_closed()
 
-    async def __send_chat_request__(self, from_user: str, from_user_addr: str,
+    async def __send_chat_request__(self, from_user: str, from_user_identity: str,
                                     to_user: str) -> bytes:
         """
         Sends a chat request from a user to another user.
@@ -140,7 +141,7 @@ class Server:
             return b'0'
 
         writer, sha_256_secret_key = self.users[to_user]
-        res = convert_operation_to_code("recieve_chat_request") + "#" + from_user_addr + ":" + from_user
+        res = convert_operation_to_code("receive_chat_request") + "#" + from_user_identity + ":" + from_user
         res_encrypted = aes_encrypt_str(res, sha_256_secret_key)
 
         writer.write(res_encrypted)
@@ -157,12 +158,12 @@ class Server:
         return b'1' if username in self.users else b'0'
 
     def __change_user_username__(self, current_username: str, new_username: str,
-                                 user_addrs: any, writer: asyncio.StreamWriter, sha_256_secret_key: bytes) -> bytes:
+                                 user_identity: str, writer: asyncio.StreamWriter, sha_256_secret_key: bytes) -> bytes:
         """
         Set/update the username of a user.
         :param current_username: Current username, if the user doesn't have a username this value will be "0"
         :param new_username: New username
-        :param user_addrs: IP adress of the user
+        :param user_identity: Identity of the user, is a random SHA-256
         :param writer: Writer used for sending data. Here is used to link the username to a sending data stream (writer)
         :return: 1 if the change was successful, otherwise 0
         """
@@ -171,22 +172,18 @@ class Server:
         if new_username in self.users:
             return b'0'
 
-        # TODO: Remove after finishing the project
-        # WARNING: Only for testing, in the final stange, connecting from the same ip will be forbidden.
-        if new_username == "john":
-            user_addrs = "93.113.215.43"
-
         # If the user doesn't have already a username
         if current_username == "0":
             self.users[new_username] = (writer, sha_256_secret_key)  # sha_256_secret_key is required...
-            self.addrs[user_addrs] = new_username
+            self.addrs[user_identity] = new_username
 
-            self.__print_debug__(f"{user_addrs} set their username to {new_username}")
+            user_ip = writer.get_extra_info("peername")[0]
+            self.__print_debug__(f"{user_ip} set their username to {new_username}")
 
         # If the user does have already a username
         else:
             self.users[new_username] = self.users[current_username]
-            self.addrs[user_addrs] = new_username
+            self.addrs[user_identity] = new_username
             self.users.pop(current_username)
 
             self.__print_debug__(f"{current_username} changed their username to {new_username}")
@@ -197,7 +194,7 @@ class Server:
         """
         Using Diffie-Hellman Key Excahnge, a secure shared key is created.
         :param reader: Reader to send data to the client.
-        :param writer: Writer to recieve data from the client.
+        :param writer: Writer to receive data from the client.
         :return: A secure key in hashed in SHA-256.
         """
         raw_data = await reader.read(513)  # It's not a magic number, it's from the size of P_KEY which is 4096-bit
