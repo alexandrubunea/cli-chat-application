@@ -7,7 +7,8 @@ import asyncio
 import secrets
 
 from Security.DHKeys import P_KEY, G_KEY
-from Util.Util import sha_256_int, aes_decrypt_to_str
+from Util.Util import sha_256_int, aes_decrypt_to_str, convert_code_to_operation_str, convert_operation_to_code, \
+    aes_encrypt_str
 
 
 class Server:
@@ -88,48 +89,75 @@ class Server:
             data = aes_decrypt_to_str(raw_data, sha_256_secret_key)
             cmd, param = None, None
 
-            if len(data) > 1:
-                cmd, param = data[:1], data[1:]
+            if "#" in data:
+                cmd, param = data.split("#", 1)
             else:
                 cmd = data
+            cmd = convert_code_to_operation_str(cmd)
 
             self.__print_debug__(f"Command {cmd} from {user_addrs} with param {param}")
 
             match cmd:
-                case "u":  # set username
+                case "change_username":
                     current_username, new_username = param.split(":")
-                    res = self.__change_user_username__(current_username, new_username, user_addrs, writer)
-
-                    writer.write(res.to_bytes(1))
+                    res = self.__change_user_username__(current_username, new_username,
+                                                        user_addrs, writer, sha_256_secret_key)
+                    writer.write(res)
                     await writer.drain()
 
-                case "s":  # search username
+                case "search_user":
                     res = self.__search_username__(param)
 
-                    writer.write(res.to_bytes(1))
+                    writer.write(res)
                     await writer.drain()
-                case "c":  # chat with user
+
+                case "chat_with_user":
+                    from_user = self.addrs[user_addrs]
+                    res = await self.__send_chat_request__(from_user, user_addrs, param)
+
+                    writer.write(res)
+                    await writer.drain()
+
+                case "view_chat_requests":  # used to update on client side
                     ...
-                case "r":  # view requests, used to update on client side
+                case "accept_chat_request":
                     ...
-                case "a":  # accept connection
-                    ...
-                case "q":  # client closes connection
+                case "quit":
                     running = False
 
         writer.close()
         await writer.wait_closed()
 
-    def __search_username__(self, username: str) -> int:
+    async def __send_chat_request__(self, from_user: str, from_user_addr: str,
+                                    to_user: str) -> bytes:
+        """
+        Sends a chat request from a user to another user.
+        :param from_user: User that sends the chat request.
+        :param to_user: User who will receive the chat request.
+        :return: 1 if the operation was successful, 0 otherwise.
+        """
+        if not self.__search_username__(to_user):  # If to_user is offline
+            return b'0'
+
+        writer, sha_256_secret_key = self.users[to_user]
+        res = convert_operation_to_code("recieve_chat_request") + "#" + from_user_addr + ":" + from_user
+        res_encrypted = aes_encrypt_str(res, sha_256_secret_key)
+
+        writer.write(res_encrypted)
+        await writer.drain()
+
+        return b'1'
+
+    def __search_username__(self, username: str) -> bytes:
         """
         Search a user by its username to check if its active or not.
         :param username: username to be checked.
         :return: 1 if the username is active, 0 if not.
         """
-        return 1 if username in self.users else 0
+        return b'1' if username in self.users else b'0'
 
     def __change_user_username__(self, current_username: str, new_username: str,
-                                 user_addrs: any, writer: asyncio.StreamWriter) -> int:
+                                 user_addrs: any, writer: asyncio.StreamWriter, sha_256_secret_key: bytes) -> bytes:
         """
         Set/update the username of a user.
         :param current_username: Current username, if the user doesn't have a username this value will be "0"
@@ -138,25 +166,32 @@ class Server:
         :param writer: Writer used for sending data. Here is used to link the username to a sending data stream (writer)
         :return: 1 if the change was successful, otherwise 0
         """
+        if new_username == "0":  # Invalid username, "0" is used to express a username that is not set
+            return b'0'
+        if new_username in self.users:
+            return b'0'
+
+        # TODO: Remove after finishing the project
+        # WARNING: Only for testing, in the final stange, connecting from the same ip will be forbidden.
+        if new_username == "john":
+            user_addrs = "93.113.215.43"
+
         # If the user doesn't have already a username
-        if current_username == "0" and new_username not in self.users:
-            self.users[new_username] = writer
+        if current_username == "0":
+            self.users[new_username] = (writer, sha_256_secret_key)  # sha_256_secret_key is required...
             self.addrs[user_addrs] = new_username
 
             self.__print_debug__(f"{user_addrs} set their username to {new_username}")
-            return 1
 
         # If the user does have already a username
-        elif current_username != "0" and new_username not in self.users:
+        else:
             self.users[new_username] = self.users[current_username]
             self.addrs[user_addrs] = new_username
-
             self.users.pop(current_username)
 
             self.__print_debug__(f"{current_username} changed their username to {new_username}")
-            return 1
 
-        return 0
+        return b'1'
 
     async def __secure_connection__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes:
         """

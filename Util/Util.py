@@ -64,3 +64,47 @@ def aes_decrypt_to_str(crypted_text: bytes, key: bytes) -> str:
     plain_text = unpadder.update(padded_text) + unpadder.finalize()
 
     return plain_text.decode("utf-8")
+
+
+def convert_operation_to_code(operation: str) -> str:
+    match operation:
+        case "false":
+            return "0"
+        case "true":
+            return "1"
+        case "change_username":
+            return "2"
+        case "search_user":
+            return "3"
+        case "chat_with_user":
+            return "4"
+        case "view_chat_requests":
+            return "5"
+        case "accept_chat_request":
+            return "6"
+        case "quit":
+            return "7"
+        case "recieve_chat_request":
+            return "8"
+
+
+def convert_code_to_operation_str(code: str) -> str:
+    match code:
+        case "0":
+            return "false"
+        case "1":
+            return "true"
+        case "2":
+            return "change_username"
+        case "3":
+            return "search_user"
+        case "4":
+            return "chat_with_user"
+        case "5":
+            return "view_chat_requests"
+        case "6":
+            return "accept_chat_request"
+        case "7":
+            return "quit"
+        case "8":
+            return "recieve_chat_request"

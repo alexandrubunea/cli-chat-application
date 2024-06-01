@@ -5,9 +5,12 @@ Author: Bunea Alexandru
 """
 import secrets
 import socket
+import threading
+import time
 
 from Security.DHKeys import P_KEY, G_KEY
-from Util.Util import sha_256_int, aes_encrypt_str
+from Util.Util import sha_256_int, aes_encrypt_str, convert_operation_to_code, aes_decrypt_to_str, \
+    convert_code_to_operation_str
 
 
 class Client:
@@ -26,6 +29,8 @@ class Client:
 
         # Default values
         self.username = "0"  # Used when there is no username set
+        self.chat_requests = set()
+        self.last_response = None  # Last response from the server to a request
 
         # Diffie-Hellman
         self.private_key = secrets.randbits(4096)  # Generates a number for the secret key
@@ -82,12 +87,65 @@ class Client:
 
         return sha_256_secret_key
 
-    def __encrypt_str__(self, text: str, secret_key: str) -> str:
+    def __listen_to_server__(self, soc: socket.socket, secret_key: bytes) -> None:
         """
-        Encrypts a text using AES
-        :param text: Text to be encrypted
-        :return: Encrypted text
+        Actively listens to the server for incoming chat requests or other informations.
+        :param soc: Socket of the client.
+        :param secret_key: Secret key used to communicate with the server.
+        :return: None
         """
+        while True:
+            try:
+                # How does listening to server for messages?
+                # Well, we listen for all of the responses, but if it is something boring like true or false,
+                # or basically something that the user requested, then it will be saved in "last_response"
+                # but if it's not, and it's something that the server is sending to the user than that will be handled
+                # in a specific way, because is something more "complex"
+                encrypted_data = soc.recv(256)
+                if encrypted_data == b'0' or encrypted_data == b'1':  # Boring response
+                    self.last_response = int(encrypted_data.decode("utf-8"))
+                    continue
+
+                data = aes_decrypt_to_str(encrypted_data, secret_key)
+                cmd, param = None, None
+
+                if "#" in data:
+                    cmd, param = data.split("#", 1)
+                else:
+                    cmd = data
+                cmd = convert_code_to_operation_str(cmd)
+
+                match cmd:
+                    case "recieve_chat_request":
+                        if ":" not in param:  # Maybe, somehow, its possible?!
+                            print("Something went really wrong, please try again later")
+
+                        sender_addr, sender_name = param.split(":", 1)
+                        self.chat_requests.add((sender_addr, sender_name))
+
+                        print(f"* You recieved a chat request from {sender_name}. Type \"accept {sender_name}\""
+                              f" to chat with them!")
+
+            except (socket.timeout, socket.error) as e:
+                print(f"* Connection ended: {e}")
+                break
+
+    def __recieve_res_from_req__(self) -> int:
+        """
+        Handles the "boring" responses from the server, and ensurses that the data had arrived.
+        :return: The response from the server.
+        """
+        while self.last_response is None:
+            time.sleep(0.25)
+
+        res = self.last_response
+        self.last_response = None
+
+        if res is None:
+            print("Something went really wrong, please try again later.")
+            res = 0
+
+        return res
 
     def __user_input__(self, soc: socket.socket, secret_key: bytes) -> None:
         """
@@ -111,11 +169,13 @@ class Client:
             "exit": "exit - close the application"
         }
 
+        # Listen the responses from the server
+        listen_res_thread = threading.Thread(target=self.__listen_to_server__, args=(soc, secret_key))
+        listen_res_thread.daemon = True
+        listen_res_thread.start()
+
         while running:
             in_keyboard = input().lower()
-
-            # To optimize data usage, for representing each command we will try to use as few letters as possible
-            req = ""
 
             if " " in in_keyboard:
                 cmd, param = in_keyboard.split(" ")
@@ -135,12 +195,12 @@ class Client:
                         print(text_commands["username"])
                         continue
 
-                    req = "u" + self.username + ":" + param
+                    req = convert_operation_to_code("change_username") + "#" + self.username + ":" + param
                     req_encrypted = aes_encrypt_str(req, secret_key)
                     soc.sendall(req_encrypted)
 
                     # Get confirmation from the server
-                    res = int.from_bytes(soc.recv(1))
+                    res = self.__recieve_res_from_req__()
 
                     if res:
                         self.username = param
@@ -153,12 +213,12 @@ class Client:
                         print(text_commands["search"])
                         continue
 
-                    req = "s" + param
+                    req = convert_operation_to_code("search_user") + "#" + param
                     req_encrypted = aes_encrypt_str(req, secret_key)
                     soc.sendall(req_encrypted)
 
                     # Get the result from the server, 1 = users is online, 0 = user is not online
-                    res = int.from_bytes(soc.recv(1))
+                    res = self.__recieve_res_from_req__()
 
                     status = "online" if res else "offline"
                     print(f"* User {param} is {status}.")
@@ -168,23 +228,42 @@ class Client:
                         print(text_commands["chat"])
                         continue
 
-                    req = "c" + param
+                    if self.username == "0":
+                        print("* You must set your username before sending a chat request.")
+                        continue
+
+                    if self.username == param:
+                        print("* You can't chat with yourself. Or maybe?")
+                        continue
+
+                    req = convert_operation_to_code("chat_with_user") + "#" + param
+                    req_encrypted = aes_encrypt_str(req, secret_key)
+                    soc.sendall(req_encrypted)
+
+                    res = self.__recieve_res_from_req__()
+
+                    if res:
+                        print(f"* You have sent a chat request to {param}.")
+                    else:
+                        print(f"* User {param} is offline.")
+
                 case "requests":
                     if not param:
                         print(text_commands["requests"])
                         continue
 
-                    req = "r" + param
+                    req = convert_operation_to_code("view_chat_requests") + "#" + param
                 case "accept":
                     if not param:
                         print(text_commands["accept"])
                         continue
 
-                    req = "a" + param
+                    req = convert_operation_to_code("accept_chat_request") + "#" + param
                 case "exit":
                     running = False
 
-                    req = "q" + self.username  # We should let the server know that a user have disconnected
+                    # We should let the server know that a user have disconnected
+                    req = convert_operation_to_code("quit") + "#" + self.username
                 case _:
                     print("* Invalid command! Type \"help\" to see the available commands...")
 
