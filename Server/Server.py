@@ -71,7 +71,7 @@ class Server:
         """
 
         sha_256_secret_key = await self.__secure_connection__(reader, writer)
-        user_addrs = writer.get_extra_info("peername")  # Gets the ip of the user
+        user_addrs = writer.get_extra_info("peername")[0]  # Gets the ip of the user
 
         if sha_256_secret_key == b'0':  # This mean it was just an availability check, connection can be dropped
             self.__print_debug__(f"Connection tested by {user_addrs}")
@@ -98,42 +98,65 @@ class Server:
             match cmd:
                 case "u":  # set username
                     current_username, new_username = param.split(":")
-                    res = 0  # We assume that the desired username is already taken
-                    # If the user doesn't have already a username
-
-                    if current_username == "0" and new_username not in self.users:
-                        self.users[new_username] = writer
-                        self.addrs[user_addrs] = new_username
-
-                        self.__print_debug__(f"{user_addrs} set their username to {new_username}")
-                        res = 1
-
-                    # If the user does have already a username
-                    elif current_username != "0" and new_username not in self.users:
-                        self.users[new_username] = self.users[current_username]
-                        self.addrs[user_addrs] = new_username
-
-                        self.users.pop(current_username)
-
-                        self.__print_debug__(f"{current_username} changed their username to {new_username}")
-                        res = 1
+                    res = self.__change_user_username__(current_username, new_username, user_addrs, writer)
 
                     writer.write(res.to_bytes(1))
                     await writer.drain()
 
                 case "s":  # search username
-                    ...
+                    res = self.__search_username__(param)
+
+                    writer.write(res.to_bytes(1))
+                    await writer.drain()
                 case "c":  # chat with user
                     ...
                 case "r":  # view requests, used to update on client side
                     ...
-                case "r":  # accept connection
+                case "a":  # accept connection
                     ...
                 case "q":  # client closes connection
                     running = False
 
         writer.close()
         await writer.wait_closed()
+
+    def __search_username__(self, username: str) -> int:
+        """
+        Search a user by its username to check if its active or not.
+        :param username: username to be checked.
+        :return: 1 if the username is active, 0 if not.
+        """
+        return 1 if username in self.users else 0
+
+    def __change_user_username__(self, current_username: str, new_username: str,
+                                 user_addrs: any, writer: asyncio.StreamWriter) -> int:
+        """
+        Set/update the username of a user.
+        :param current_username: Current username, if the user doesn't have a username this value will be "0"
+        :param new_username: New username
+        :param user_addrs: IP adress of the user
+        :param writer: Writer used for sending data. Here is used to link the username to a sending data stream (writer)
+        :return: 1 if the change was successful, otherwise 0
+        """
+        # If the user doesn't have already a username
+        if current_username == "0" and new_username not in self.users:
+            self.users[new_username] = writer
+            self.addrs[user_addrs] = new_username
+
+            self.__print_debug__(f"{user_addrs} set their username to {new_username}")
+            return 1
+
+        # If the user does have already a username
+        elif current_username != "0" and new_username not in self.users:
+            self.users[new_username] = self.users[current_username]
+            self.addrs[user_addrs] = new_username
+
+            self.users.pop(current_username)
+
+            self.__print_debug__(f"{current_username} changed their username to {new_username}")
+            return 1
+
+        return 0
 
     async def __secure_connection__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> bytes:
         """
@@ -158,7 +181,7 @@ class Server:
         secret_key = pow(client_public_key, self.private_key, P_KEY)  # Using Diffie-Hellman
         sha_256_secret_key = sha_256_int(secret_key)
 
-        self.__print_debug__(f"Secure connection established with {writer.get_extra_info('peername')}")
+        self.__print_debug__(f"Secure connection established with {writer.get_extra_info('peername')[0]}")
 
         return sha_256_secret_key
 

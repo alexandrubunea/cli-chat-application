@@ -154,6 +154,15 @@ class Client:
                         continue
 
                     req = "s" + param
+                    req_encrypted = aes_encrypt_str(req, secret_key)
+                    soc.sendall(req_encrypted)
+
+                    # Get the result from the server, 1 = users is online, 0 = user is not online
+                    res = int.from_bytes(soc.recv(1))
+
+                    status = "online" if res else "offline"
+                    print(f"* User {param} is {status}.")
+
                 case "chat":
                     if not param:
                         print(text_commands["chat"])
@@ -175,7 +184,7 @@ class Client:
                 case "exit":
                     running = False
 
-                    req = "q" + username  # We should let the server know that a user have disconnected
+                    req = "q" + self.username  # We should let the server know that a user have disconnected
                 case _:
                     print("* Invalid command! Type \"help\" to see the available commands...")
 
