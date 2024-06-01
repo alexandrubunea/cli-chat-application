@@ -32,6 +32,9 @@ class Server:
 
         # Users
         self.users = {}  # This hashmap will store their connection to the server, and will have their username as key
+        # This hashmap is used to store usernames based on ips, so when a socket is closed suddenly, the username will
+        # be removed from self.users
+        self.addrs = {}
 
         self.__print_debug__("The server was initialized.")
         self.__print_debug__(f"Will run on {host}:{port}")
@@ -68,8 +71,10 @@ class Server:
         """
 
         sha_256_secret_key = await self.__secure_connection__(reader, writer)
+        user_addrs = writer.get_extra_info("peername")  # Gets the ip of the user
 
         if sha_256_secret_key == b'0':  # This mean it was just an availability check, connection can be dropped
+            self.__print_debug__(f"Connection tested by {user_addrs}")
             return
 
         # Run until the client closes the connection
@@ -88,18 +93,30 @@ class Server:
             else:
                 cmd = data
 
+            self.__print_debug__(f"Command {cmd} from {user_addrs} with param {param}")
+
             match cmd:
                 case "u":  # set username
                     current_username, new_username = param.split(":")
                     res = 0  # We assume that the desired username is already taken
                     # If the user doesn't have already a username
+
                     if current_username == "0" and new_username not in self.users:
                         self.users[new_username] = writer
+                        self.addrs[new_username] = user_addrs
+
+                        self.__print_debug__(f"{user_addrs} set their username to {new_username}")
                         res = 1
+
                     # If the user does have already a username
                     elif current_username != "0" and new_username not in self.users:
                         self.users[new_username] = self.users[current_username]
+                        self.addrs[new_username] = self.addrs[current_username]
+
                         self.users.pop(current_username)
+                        self.addrs.pop(current_username)
+
+                        self.__print_debug__(f"{current_username} changed their username to {new_username}")
                         res = 1
 
                     writer.write(res.to_bytes(1))
@@ -141,6 +158,8 @@ class Server:
 
         secret_key = pow(client_public_key, self.private_key, P_KEY)  # Using Diffie-Hellman
         sha_256_secret_key = sha_256_int(secret_key)
+
+        self.__print_debug__(f"Secure connection established with {writer.get_extra_info('peername')}")
 
         return sha_256_secret_key
 

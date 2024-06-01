@@ -24,6 +24,9 @@ class Client:
         self.host_port = host_port
         self.client_port = client_port
 
+        # Default values
+        self.username = "0"  # Used when there is no username set
+
         # Diffie-Hellman
         self.private_key = secrets.randbits(4096)  # Generates a number for the secret key
         self.public_key = pow(G_KEY, self.private_key, P_KEY)  # Calculate the public key
@@ -113,7 +116,6 @@ class Client:
 
             # To optimize data usage, for representing each command we will try to use as few letters as possible
             req = ""
-            username = "0"  # Used when there is no username
 
             if " " in in_keyboard:
                 cmd, param = in_keyboard.split(" ")
@@ -133,7 +135,7 @@ class Client:
                         print(text_commands["username"])
                         continue
 
-                    req = "u" + username + ":" + param
+                    req = "u" + self.username + ":" + param
                     req_encrypted = aes_encrypt_str(req, secret_key)
                     soc.sendall(req_encrypted)
 
@@ -141,8 +143,8 @@ class Client:
                     res = int.from_bytes(soc.recv(1))
 
                     if res:
-                        username = param
-                        print(f"* Your username was set successfully to {username}")
+                        self.username = param
+                        print(f"* Your username was set successfully to {self.username}")
                     else:
                         print(f"* This username is already taken, please chose another one.")
 
