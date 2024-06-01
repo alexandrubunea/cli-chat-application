@@ -103,7 +103,7 @@ class Server:
 
                     if current_username == "0" and new_username not in self.users:
                         self.users[new_username] = writer
-                        self.addrs[new_username] = user_addrs
+                        self.addrs[user_addrs] = new_username
 
                         self.__print_debug__(f"{user_addrs} set their username to {new_username}")
                         res = 1
@@ -111,10 +111,9 @@ class Server:
                     # If the user does have already a username
                     elif current_username != "0" and new_username not in self.users:
                         self.users[new_username] = self.users[current_username]
-                        self.addrs[new_username] = self.addrs[current_username]
+                        self.addrs[user_addrs] = new_username
 
                         self.users.pop(current_username)
-                        self.addrs.pop(current_username)
 
                         self.__print_debug__(f"{current_username} changed their username to {new_username}")
                         res = 1
