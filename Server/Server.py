@@ -70,96 +70,79 @@ class Server:
         :param writer: Writer used for sending data.
         :return: None
         """
+        sha_256_secret_key = await self.__secure_connection__(reader, writer)
+        user_identity = generate_random_sha_256()  # Gives the user an identity, to avoid confusions in the future
+        user_peername = writer.get_extra_info("peername")
+        current_username = "0"
+
+        if sha_256_secret_key == b'0':  # This means it was just an availability check, connection can be dropped
+            self.__print_debug__(f"Connection tested by {user_peername}")
+            return
 
         try:
-            sha_256_secret_key = await self.__secure_connection__(reader, writer)
-            user_identity = generate_random_sha_256()  # Gives the user an identity, to avoid confusions in the future
-            user_peername = writer.get_extra_info("peername")
-            current_username = "0"
-
-            if sha_256_secret_key == b'0':  # This means it was just an availability check, connection can be dropped
-                self.__print_debug__(f"Connection tested by {user_peername}")
-                return
-
             # Run until the client closes the connection
             while True:
-                try:
-                    raw_data = await reader.read(512)
-                    if not raw_data:
-                        # If no data is received, assume connection is closed
-                        raise ConnectionResetError("Connection closed by the client")
+                raw_data = await reader.read(512)
+                if not raw_data:
+                    # If no data is received, assume connection is closed
+                    raise ConnectionError(f"No data was received from the user {current_username}, "
+                                          f"closing the connection")
 
-                    data = aes_decrypt_to_str(raw_data, sha_256_secret_key)
-                    cmd, param = None, None
+                data = aes_decrypt_to_str(raw_data, sha_256_secret_key)
+                cmd, param = None, None
 
-                    if "#" in data:
-                        cmd, param = data.split("#", 1)
-                    else:
-                        cmd = data
-                    cmd = convert_code_to_operation_str(cmd)
+                if "#" in data:
+                    cmd, param = data.split("#", 1)
+                else:
+                    cmd = data
+                cmd = convert_code_to_operation_str(cmd)
 
-                    self.__print_debug__(f"Command {cmd} from {user_peername} with param {param}")
+                self.__print_debug__(f"Command {cmd} from {user_peername} with param {param}")
 
-                    match cmd:
-                        case "change_username":
-                            new_username = param
-                            res = self.__change_user_username__(current_username, new_username,
-                                                                user_identity, writer, sha_256_secret_key)
+                match cmd:
+                    case "change_username":
+                        new_username = param
+                        res = self.__change_user_username__(current_username, new_username,
+                                                            user_identity, writer, sha_256_secret_key)
 
-                            # Update the username on server-side too...
-                            if res == b'1':
-                                current_username = new_username
+                        # Update the username on server-side too...
+                        if res == b'1':
+                            current_username = new_username
 
-                            writer.write(res)
-                            await writer.drain()
+                        writer.write(res)
+                        await writer.drain()
 
-                        case "search_user":
-                            res = self.__search_username__(param)
+                    case "search_user":
+                        res = self.__search_username__(param)
 
-                            writer.write(res)
-                            await writer.drain()
+                        writer.write(res)
+                        await writer.drain()
 
-                        case "chat_with_user":
-                            from_user = self.identities[user_identity]
-                            res = await self.__send_chat_request__(from_user, user_identity, param)
+                    case "chat_with_user":
+                        from_user = self.identities[user_identity]
+                        res = await self.__send_chat_request__(from_user, user_identity, param)
 
-                            writer.write(res)
-                            await writer.drain()
+                        writer.write(res)
+                        await writer.drain()
 
-                        case "check_identity_status":
-                            res = self.__is_identity_online__(param)
+                    case "check_identity_status":
+                        res = self.__is_identity_online__(param)
 
-                            writer.write(res)
-                            await writer.drain()
+                        writer.write(res)
+                        await writer.drain()
 
-                        case "accept_chat_request":
-                            # Your logic for accepting a chat request
-                            pass
+                    case "accept_chat_request":
+                        ...
 
-                except (ConnectionResetError, OSError):
-                    # Connection with the user is broken.
-                    self.__print_debug__(f"User {user_peername} has disconnected.")
-                    if user_identity in self.identities:
-                        self.identities.pop(user_identity)
-                        self.__print_debug__(f"{user_identity} removed from identities list.")
+        except ConnectionError:  # The user had disconnect, remove him from the lists
+            self.__print_debug__(f"User {user_peername} had disconnected.")
+            if user_identity in self.identities:
+                self.identities.pop(user_identity)
+                self.__print_debug__(f"{user_identity} removed from identities list.")
 
-                    if current_username != "0" and current_username in self.users:
-                        self.users.pop(current_username)
-                        self.__print_debug__(f"{current_username} removed from users list.")
-
-                    writer.close()
-                    await writer.wait_closed()
-                    break
-
-                except Exception as e:
-                    # Handle unexpected exceptions
-                    self.__print_debug__(f"An unexpected error occurred: {e}")
-                    writer.close()
-                    await writer.wait_closed()
-                    break
-
-        except Exception as e:
-            self.__print_debug__(f"Failed to establish secure connection or an error occurred: {e}")
+            if current_username != "0" and current_username in self.users:
+                self.users.pop(current_username)
+                self.__print_debug__(f"{current_username} removed from users list.")
 
     async def __send_chat_request__(self, from_user: str, from_user_identity: str,
                                     to_user: str) -> bytes:
@@ -253,7 +236,7 @@ class Server:
         secret_key = pow(client_public_key, self.private_key, P_KEY)  # Using Diffie-Hellman
         sha_256_secret_key = sha_256_int(secret_key)
 
-        self.__print_debug__(f"Secure connection established with {writer.get_extra_info('peername')[0]}")
+        self.__print_debug__(f"Secure connection established with {writer.get_extra_info('peername')}")
 
         return sha_256_secret_key
 
