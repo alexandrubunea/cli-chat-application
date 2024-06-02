@@ -95,12 +95,35 @@ class Client:
         Handles the chat between two users
         :return: None
         """
-        soc = None
+        soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         if self.is_host:
-            ...
+            try:
+                soc.bind(("127.0.0.1", self.client_port))
+            except socket.error as e:
+                print(f"* Error occured while trying to create the chat connection: {e}")
+                return
+
+            soc.listen()
+            partner_socket, _ = soc.accept()
+            data = partner_socket.recv(1024)
+            print(data.decode("UTF-8"))
+
         else:
-            ...
+            keep_trying = True
+
+            try:
+                while keep_trying:
+                    try:
+                        soc.connect((self.host, self.host_port))
+                        keep_trying = False
+                    except (socket.timeout, socket.error):
+                        print("* Couldn't reach the host, trying again...")
+                        time.sleep(3)
+            except KeyboardInterrupt:
+                return
+
+            soc.sendall("TEST".encode("UTF-8"))
 
     def __secure_connection__(self, soc: socket.socket) -> bytes:
         """
@@ -197,6 +220,7 @@ class Client:
                         self.cut_connection_to_server.set()
                         self.chat_mode = True
                         soc.close()
+
                         print("Press ENTER to continue...")
 
             except (socket.timeout, socket.error) as e:
@@ -402,5 +426,5 @@ class Client:
 
 
 if __name__ == "__main__":
-    client = Client("127.0.0.1", 1712, 1713)
+    client = Client("127.0.0.1", 1712, 1716)
     client.start()
