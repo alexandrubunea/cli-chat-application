@@ -35,7 +35,7 @@ class Server:
         self.users = {}  # This hashmap will store their connection to the server, and will have their username as key
         # This hashmap is used to store usernames based on ips, so when a socket is closed suddenly, the username will
         # be removed from self.users
-        self.addrs = {}
+        self.identities = {}
 
         self.__print_debug__("The server was initialized.")
         self.__print_debug__(f"Will run on {host}:{port}")
@@ -71,63 +71,95 @@ class Server:
         :return: None
         """
 
-        sha_256_secret_key = await self.__secure_connection__(reader, writer)
-        user_identity = generate_random_sha_256()  # Gives the user an identity, to avoid confusions in the future
-        user_ip = writer.get_extra_info("peername")[0]
+        try:
+            sha_256_secret_key = await self.__secure_connection__(reader, writer)
+            user_identity = generate_random_sha_256()  # Gives the user an identity, to avoid confusions in the future
+            user_peername = writer.get_extra_info("peername")
+            current_username = "0"
 
-        if sha_256_secret_key == b'0':  # This mean it was just an availability check, connection can be dropped
-            self.__print_debug__(f"Connection tested by {user_ip}")
-            return
+            if sha_256_secret_key == b'0':  # This means it was just an availability check, connection can be dropped
+                self.__print_debug__(f"Connection tested by {user_peername}")
+                return
 
-        # Run until the client closes the connection
-        running = True
+            # Run until the client closes the connection
+            while True:
+                try:
+                    raw_data = await reader.read(512)
+                    if not raw_data:
+                        # If no data is received, assume connection is closed
+                        raise ConnectionResetError("Connection closed by the client")
 
-        while running:
-            raw_data = await reader.read(256)
-            if not raw_data:  # User probably disconnected or lost connection
-                break
+                    data = aes_decrypt_to_str(raw_data, sha_256_secret_key)
+                    cmd, param = None, None
 
-            data = aes_decrypt_to_str(raw_data, sha_256_secret_key)
-            cmd, param = None, None
+                    if "#" in data:
+                        cmd, param = data.split("#", 1)
+                    else:
+                        cmd = data
+                    cmd = convert_code_to_operation_str(cmd)
 
-            if "#" in data:
-                cmd, param = data.split("#", 1)
-            else:
-                cmd = data
-            cmd = convert_code_to_operation_str(cmd)
+                    self.__print_debug__(f"Command {cmd} from {user_peername} with param {param}")
 
-            self.__print_debug__(f"Command {cmd} from {user_ip} with param {param}")
+                    match cmd:
+                        case "change_username":
+                            new_username = param
+                            res = self.__change_user_username__(current_username, new_username,
+                                                                user_identity, writer, sha_256_secret_key)
 
-            match cmd:
-                case "change_username":
-                    current_username, new_username = param.split(":")
-                    res = self.__change_user_username__(current_username, new_username,
-                                                        user_identity, writer, sha_256_secret_key)
-                    writer.write(res)
-                    await writer.drain()
+                            # Update the username on server-side too...
+                            if res == b'1':
+                                current_username = new_username
 
-                case "search_user":
-                    res = self.__search_username__(param)
+                            writer.write(res)
+                            await writer.drain()
 
-                    writer.write(res)
-                    await writer.drain()
+                        case "search_user":
+                            res = self.__search_username__(param)
 
-                case "chat_with_user":
-                    from_user = self.addrs[user_identity]
-                    res = await self.__send_chat_request__(from_user, user_identity, param)
+                            writer.write(res)
+                            await writer.drain()
 
-                    writer.write(res)
-                    await writer.drain()
+                        case "chat_with_user":
+                            from_user = self.identities[user_identity]
+                            res = await self.__send_chat_request__(from_user, user_identity, param)
 
-                case "view_chat_requests":  # Used to update on client side
-                    ...
-                case "accept_chat_request":
-                    ...
-                case "quit":
-                    running = False
+                            writer.write(res)
+                            await writer.drain()
 
-        writer.close()
-        await writer.wait_closed()
+                        case "check_identity_status":
+                            res = self.__is_identity_online__(param)
+
+                            writer.write(res)
+                            await writer.drain()
+
+                        case "accept_chat_request":
+                            # Your logic for accepting a chat request
+                            pass
+
+                except (ConnectionResetError, OSError):
+                    # Connection with the user is broken.
+                    self.__print_debug__(f"User {user_peername} has disconnected.")
+                    if user_identity in self.identities:
+                        self.identities.pop(user_identity)
+                        self.__print_debug__(f"{user_identity} removed from identities list.")
+
+                    if current_username != "0" and current_username in self.users:
+                        self.users.pop(current_username)
+                        self.__print_debug__(f"{current_username} removed from users list.")
+
+                    writer.close()
+                    await writer.wait_closed()
+                    break
+
+                except Exception as e:
+                    # Handle unexpected exceptions
+                    self.__print_debug__(f"An unexpected error occurred: {e}")
+                    writer.close()
+                    await writer.wait_closed()
+                    break
+
+        except Exception as e:
+            self.__print_debug__(f"Failed to establish secure connection or an error occurred: {e}")
 
     async def __send_chat_request__(self, from_user: str, from_user_identity: str,
                                     to_user: str) -> bytes:
@@ -148,6 +180,14 @@ class Server:
         await writer.drain()
 
         return b'1'
+
+    def __is_identity_online__(self, identity: str) -> bytes:
+        """
+        Checks if a user is online by using its identity.
+        :param identity: Identity of the user.
+        :return: True if user is online, False otherwise.
+        """
+        return b'1' if identity in self.identities else b'0'
 
     def __search_username__(self, username: str) -> bytes:
         """
@@ -175,15 +215,15 @@ class Server:
         # If the user doesn't have already a username
         if current_username == "0":
             self.users[new_username] = (writer, sha_256_secret_key)  # sha_256_secret_key is required...
-            self.addrs[user_identity] = new_username
+            self.identities[user_identity] = new_username
 
-            user_ip = writer.get_extra_info("peername")[0]
-            self.__print_debug__(f"{user_ip} set their username to {new_username}")
+            user_peername = writer.get_extra_info("peername")
+            self.__print_debug__(f"{user_peername} set their username to {new_username}")
 
         # If the user does have already a username
         else:
             self.users[new_username] = self.users[current_username]
-            self.addrs[user_identity] = new_username
+            self.identities[user_identity] = new_username
             self.users.pop(current_username)
 
             self.__print_debug__(f"{current_username} changed their username to {new_username}")

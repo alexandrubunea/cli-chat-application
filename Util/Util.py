@@ -78,7 +78,7 @@ def convert_operation_to_code(operation: str) -> str:
             return "3"
         case "chat_with_user":
             return "4"
-        case "view_chat_requests":
+        case "check_identity_status":
             return "5"
         case "accept_chat_request":
             return "6"
@@ -101,7 +101,7 @@ def convert_code_to_operation_str(code: str) -> str:
         case "4":
             return "chat_with_user"
         case "5":
-            return "view_chat_requests"
+            return "check_identity_status"
         case "6":
             return "accept_chat_request"
         case "7":
