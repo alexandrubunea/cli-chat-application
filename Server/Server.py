@@ -5,6 +5,7 @@ Author: Bunea Alexandru
 """
 import asyncio
 import secrets
+import time
 
 from Security.DHKeys import P_KEY, G_KEY
 from Util.Util import sha_256_int, aes_decrypt_to_str, convert_code_to_operation_str, convert_operation_to_code, \
@@ -46,7 +47,10 @@ class Server:
         Starts the server.
         :return: None
         """
-        asyncio.run(self.__run_server__())
+        try:
+            asyncio.run(self.__run_server__())
+        except KeyboardInterrupt:
+            return
 
     async def __run_server__(self):
         """
@@ -101,6 +105,10 @@ class Server:
 
                 match cmd:
                     case "change_username":
+                        if not param:
+                            self.__print_debug__(f"Something went wrong trying to do: {data}")
+                            continue
+
                         new_username = param
                         res = self.__change_user_username__(current_username, new_username,
                                                             user_identity, writer, sha_256_secret_key)
@@ -113,12 +121,20 @@ class Server:
                         await writer.drain()
 
                     case "search_user":
+                        if not param:
+                            self.__print_debug__(f"Something went wrong trying to do: {data}")
+                            continue
+
                         res = self.__search_username__(param)
 
                         writer.write(res)
                         await writer.drain()
 
                     case "chat_with_user":
+                        if not param:
+                            self.__print_debug__(f"Something went wrong trying to do: {data}")
+                            continue
+
                         from_user = self.identities[user_identity]
                         res = await self.__send_chat_request__(from_user, user_identity, param)
 
@@ -126,23 +142,133 @@ class Server:
                         await writer.drain()
 
                     case "check_identity_status":
+                        if not param:
+                            self.__print_debug__(f"Something went wrong trying to do: {data}")
+                            continue
+
                         res = self.__is_identity_online__(param)
 
                         writer.write(res)
                         await writer.drain()
 
                     case "accept_chat_request":
-                        ...
+                        if not param or ":" not in param:
+                            self.__print_debug__(f"Something went wrong trying to do: {data}")
+                            continue
+
+                        identity, username = param.split(":")
+                        res = b'0'
+                        if username in self.users and self.identities[identity] == username:
+                            res = b'1'
+
+                        writer.write(res)
+                        await writer.drain()
+
+                        self.__print_debug__(f"{current_username} will start to chat with {username}.")
+
+                        # Inform the host that the connection will be made
+                        # users[username] = (writer, sha_256_key)
+                        res = convert_operation_to_code("transform_to_host") + "#" + current_username
+                        res_encrypted = aes_encrypt_str(res, self.users[username][1])
+
+                        self.users[username][0].write(res_encrypted)
+                        await self.users[username][0].drain()
+
+                        # Sending hosts informations
+                        # Send port
+                        ip, port = await self.__request_access_data__(identity, username)
+                        res = convert_operation_to_code("receive_access_port") + "#" + port
+                        res_encrypted = aes_encrypt_str(res, sha_256_secret_key)
+
+                        writer.write(res_encrypted)
+                        await writer.drain()
+
+                        # Send ip
+                        res = convert_operation_to_code("receive_ip") + "#" + ip
+                        res_encrypted = aes_encrypt_str(res, sha_256_secret_key)
+
+                        writer.write(res_encrypted)
+                        await writer.drain()
+
+                    case "ready":
+                        # This mean the user is ready to close and connect to the host
+                        self.__disconnect_user__(user_peername, user_identity, current_username)
+                        await self.__send_disconnect_signal__(writer, sha_256_secret_key)
+
+                        break
+
+                    case "send_access_port":
+                        if not param:
+                            self.__print_debug__(f"Something went wrong trying to do: {data}")
+                            continue
+
+                        # Transform the value at key user_identity to be a tuple,
+                        # so the port will be easy to access
+                        self.identities[user_identity] = (current_username, param)
+
+                        self.__print_debug__(f"Port {param} received from user {current_username}.")
+
+                        # Send a signal to the client to disconnect from the server
+                        await self.__send_disconnect_signal__(writer, sha_256_secret_key)
+
+                        break
 
         except ConnectionError:  # The user had disconnect, remove him from the lists
-            self.__print_debug__(f"User {user_peername} had disconnected.")
-            if user_identity in self.identities:
-                self.identities.pop(user_identity)
-                self.__print_debug__(f"{user_identity} removed from identities list.")
+            self.__disconnect_user__(user_peername, user_identity, current_username)
 
-            if current_username != "0" and current_username in self.users:
-                self.users.pop(current_username)
-                self.__print_debug__(f"{current_username} removed from users list.")
+    @staticmethod
+    async def __send_disconnect_signal__(writer: asyncio.StreamWriter, sha_256_secret_key: bytes) -> None:
+        """
+        Sends a signal to the client to disconnects from the server.
+        :param writer: Writer used to communicate with the client.
+        :return: None
+        """
+        req = convert_operation_to_code("close_connection")
+        req_encrypted = aes_encrypt_str(req, sha_256_secret_key)
+
+        writer.write(req_encrypted)
+        await writer.drain()
+
+    def __disconnect_user__(self, user_peername: any, user_identity: str, current_username: str) -> None:
+        self.__print_debug__(f"User {user_peername} had disconnected.")
+        if user_identity in self.identities:
+            self.identities.pop(user_identity)
+            self.__print_debug__(f"{user_identity} removed from identities list.")
+
+        if current_username != "0" and current_username in self.users:
+            self.users.pop(current_username)
+            self.__print_debug__(f"{current_username} removed from users list.")
+
+    async def __request_access_data__(self, identity: str, username: str) -> tuple[str, str]:
+        """
+        Requests the ip and the port the client will connect to.
+        :param identity: Identity of the client in "self.identities".
+        :param username: Username of the client in "self.clients".
+        :return: ip, port of the new host.
+        """
+        writer, sha_256_secret_key = self.users[username]
+        ip = writer.get_extra_info("peername")[0]
+        res = convert_operation_to_code("request_access_port")
+        res_encrypted = aes_encrypt_str(res, sha_256_secret_key)
+
+        self.__print_debug__(f"Asking {username} for a port.")
+
+        writer.write(res_encrypted)
+        await writer.drain()
+
+        # Wait to receive the port from the client, we check if the port had arrived if it's
+        # identity value is a tuple (identity, port)
+        while not isinstance(self.identities[identity], tuple):
+            await asyncio.sleep(0.25)
+
+        self.__print_debug__(f"Port received from {username}")
+
+        port = self.identities[identity][1]
+
+        # After sending the ip, port, user can be disconnected
+        self.__disconnect_user__(writer.get_extra_info("peername"), identity, username)
+
+        return ip, port
 
     async def __send_chat_request__(self, from_user: str, from_user_identity: str,
                                     to_user: str) -> bytes:
@@ -152,7 +278,7 @@ class Server:
         :param to_user: User who will receive the chat request.
         :return: 1 if the operation was successful, 0 otherwise.
         """
-        if not self.__search_username__(to_user):  # If to_user is offline
+        if self.__search_username__(to_user) == b'0':  # If to_user is offline
             return b'0'
 
         writer, sha_256_secret_key = self.users[to_user]

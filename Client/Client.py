@@ -31,6 +31,10 @@ class Client:
         self.username = "0"  # Used when there is no username set
         self.chat_requests = set()
         self.last_response = None  # Last response from the server to a request
+        self.is_host = False
+        self.cut_connection_to_server = threading.Event()
+        self.chat_mode = False
+        self.partner_name = None
 
         # Diffie-Hellman
         self.private_key = secrets.randbits(4096)  # Generates a number for the secret key
@@ -58,15 +62,45 @@ class Client:
         self.__establish_connection__()
 
     def __establish_connection__(self):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((self.host, self.host_port))
-                sha_256_secret_key = self.__secure_connection__(s)
-                self.__user_input__(s, sha_256_secret_key)
-                s.close()
+        soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+        try:
+            soc.connect((self.host, self.host_port))
         except (socket.timeout, socket.error) as e:
             print(f"* Connection ended: {e}")
+            return
+
+        sha_256_secret_key = self.__secure_connection__(soc)
+
+        # Listen the responses from the server
+        listen_server_thread = threading.Thread(target=self.__listen_to_server__, args=(soc, sha_256_secret_key))
+        listen_server_thread.start()
+
+        # Listen the user input
+        listen_user_thread = threading.Thread(target=self.__user_input__, args=(soc, sha_256_secret_key))
+        listen_user_thread.start()
+
+        # Wait for both threads to finish
+        try:
+            listen_server_thread.join()
+            listen_user_thread.join()
+        except KeyboardInterrupt:
+            pass
+
+        if self.chat_mode:
+            self.__chat__()
+
+    def __chat__(self):
+        """
+        Handles the chat between two users
+        :return: None
+        """
+        soc = None
+
+        if self.is_host:
+            ...
+        else:
+            ...
 
     def __secure_connection__(self, soc: socket.socket) -> bytes:
         """
@@ -94,7 +128,7 @@ class Client:
         :param secret_key: Secret key used to communicate with the server.
         :return: None
         """
-        while True:
+        while not self.cut_connection_to_server.is_set():
             try:
                 # How does listening to server for messages?
                 # Well, we listen for all of the responses, but if it is something boring like true or false,
@@ -114,11 +148,11 @@ class Client:
                 else:
                     cmd = data
                 cmd = convert_code_to_operation_str(cmd)
-
                 match cmd:
                     case "receive_chat_request":
-                        if ":" not in param:  # Maybe, somehow, its possible?!
-                            print("Something went really wrong, please try again later")
+                        if not param or ":" not in param:
+                            print("* Something went really wrong, please try again later")
+                            continue
 
                         sender_addr, sender_name = param.split(":", 1)
                         self.chat_requests.add((sender_addr, sender_name))
@@ -126,8 +160,48 @@ class Client:
                         print(f"* You received a chat request from {sender_name}. Type \"accept {sender_name}\""
                               f" to chat with them!")
 
+                    case "transform_to_host":
+                        if not param:
+                            print("* Something went really wrong, please try again later")
+                            continue
+
+                        print(f"* {param} accepted your request to chat, you will be the host of the conversation using"
+                              f" the port {self.client_port}.")
+                        self.partner_name = param
+                        self.is_host = True
+
+                    case "request_access_port":
+                        res = convert_operation_to_code("send_access_port") + "#" + str(self.client_port)
+                        encrypted_res = aes_encrypt_str(res, secret_key)
+                        soc.sendall(encrypted_res)
+
+                    case "receive_access_port":
+                        if not param:
+                            print("* Something went really wrong, please try again later")
+                            continue
+
+                        self.host_port = int(param)
+
+                    case "receive_ip":
+                        if not param:
+                            print("* Something went really wrong, please try again later")
+                            continue
+
+                        self.host = param
+
+                        res = convert_operation_to_code("ready")
+                        encrypted_res = aes_encrypt_str(res, secret_key)
+                        soc.sendall(encrypted_res)
+
+                    case "close_connection":
+                        self.cut_connection_to_server.set()
+                        self.chat_mode = True
+                        soc.close()
+                        print("Press ENTER to continue...")
+
             except (socket.timeout, socket.error) as e:
-                print(f"* Connection ended: {e}")
+                if not self.cut_connection_to_server.is_set():
+                    print(f"* Connection ended: {e}")
                 break
 
     def __receive_res_from_req__(self) -> int:
@@ -178,8 +252,6 @@ class Client:
         print("* Please, set your username by typing \"username <your username>\" (e.g: username 8uNNy_h0p)")
         print("* Type \"help\" to see the available commands...")
 
-        running = True  # Run until the user wants to chat with another user
-
         text_commands = {
             "username": "username [name] - set your username to let other users to find you and chat",
             "search": "search [username] - search a user by its username to see if it's present on the server",
@@ -189,112 +261,132 @@ class Client:
             "exit": "exit - close the application"
         }
 
-        # Listen the responses from the server
-        listen_res_thread = threading.Thread(target=self.__listen_to_server__, args=(soc, secret_key))
-        listen_res_thread.daemon = True
-        listen_res_thread.start()
-
-        while running:
+        while not self.cut_connection_to_server.is_set():
             try:
-                in_keyboard = input().lower()
+                in_raw = input()
+            except (UnicodeDecodeError, EOFError, KeyboardInterrupt):  # Program closed by the user
+                self.cut_connection_to_server.set()
+                soc.close()
+                break
 
-                if " " in in_keyboard:
-                    cmd, param = in_keyboard.split(" ")
-                else:
-                    cmd = in_keyboard
-                    param = None
+            in_keyboard = in_raw.lower()
 
-                match cmd:
-                    case "help":
-                        print("* Available commands: username [name], search [username], "
-                              "chat [username], requests, accept [request id], exit")
-                        for values in text_commands.values():
-                            print(values)
+            if " " in in_keyboard:
+                cmd, param = in_keyboard.split(" ")
+            else:
+                cmd = in_keyboard
+                param = None
 
-                    case "username":
-                        if not param:
-                            print(text_commands["username"])
-                            continue
+            match cmd:
+                case "help":
+                    print("* Available commands: username [name], search [username], "
+                          "chat [username], requests, accept [request id], exit")
+                    for values in text_commands.values():
+                        print(values)
 
-                        req = convert_operation_to_code("change_username") + "#" + param
-                        req_encrypted = aes_encrypt_str(req, secret_key)
-                        soc.sendall(req_encrypted)
+                case "username":
+                    if not param:
+                        print(text_commands["username"])
+                        continue
 
-                        # Get confirmation from the server
-                        res = self.__receive_res_from_req__()
+                    req = convert_operation_to_code("change_username") + "#" + param
+                    req_encrypted = aes_encrypt_str(req, secret_key)
+                    soc.sendall(req_encrypted)
 
-                        if res:
-                            self.username = param
-                            print(f"* Your username was set successfully to {self.username}")
-                        else:
-                            print(f"* This username is already taken, please chose another one.")
+                    # Get confirmation from the server
+                    res = self.__receive_res_from_req__()
 
-                    case "search":
-                        if not param:
-                            print(text_commands["search"])
-                            continue
+                    if res:
+                        self.username = param
+                        print(f"* Your username was set successfully to {self.username}")
+                    else:
+                        print(f"* This username is already taken, please chose another one.")
 
-                        req = convert_operation_to_code("search_user") + "#" + param
-                        req_encrypted = aes_encrypt_str(req, secret_key)
-                        soc.sendall(req_encrypted)
+                case "search":
+                    if not param:
+                        print(text_commands["search"])
+                        continue
 
-                        # Get the result from the server, 1 = users is online, 0 = user is not online
-                        res = self.__receive_res_from_req__()
+                    req = convert_operation_to_code("search_user") + "#" + param
+                    req_encrypted = aes_encrypt_str(req, secret_key)
+                    soc.sendall(req_encrypted)
 
-                        status = "online" if res else "offline"
-                        print(f"* User {param} is {status}.")
+                    # Get the result from the server, 1 = users is online, 0 = user is not online
+                    res = self.__receive_res_from_req__()
 
-                    case "chat":
-                        if not param:
-                            print(text_commands["chat"])
-                            continue
+                    status = "online" if res else "offline"
+                    print(f"* User {param} is {status}.")
 
-                        if self.username == "0":
-                            print("* You must set your username before sending a chat request.")
-                            continue
+                case "chat":
+                    if not param:
+                        print(text_commands["chat"])
+                        continue
 
-                        if self.username == param:
-                            print("* You can't chat with yourself. Or maybe?")
-                            continue
+                    if self.username == "0":
+                        print("* You must set your username before sending a chat request.")
+                        continue
 
-                        req = convert_operation_to_code("chat_with_user") + "#" + param
-                        req_encrypted = aes_encrypt_str(req, secret_key)
-                        soc.sendall(req_encrypted)
+                    if self.username == param:
+                        print("* You can't chat with yourself. Or maybe?")
+                        continue
 
-                        res = self.__receive_res_from_req__()
+                    req = convert_operation_to_code("chat_with_user") + "#" + param
+                    req_encrypted = aes_encrypt_str(req, secret_key)
+                    soc.sendall(req_encrypted)
 
-                        if res:
-                            print(f"* You have sent a chat request to {param}.")
-                        else:
-                            print(f"* User {param} is offline.")
+                    res = self.__receive_res_from_req__()
 
-                    case "requests":
-                        self.__update_requests_list__(soc, secret_key)
+                    if res:
+                        print(f"* You have sent a chat request to {param}.")
+                    else:
+                        print(f"* User {param} is offline.")
 
-                        if not len(self.requests_list):
-                            print("* There are no requests to chat with you.")
-                            continue
+                case "requests":
+                    self.__update_requests_list__(soc, secret_key)
 
-                        print("* The following users have sent a request to chat with you:")
-                        for request in self.requests_list:
-                            print(f"> {request[1]}")
+                    if not len(self.requests_list):
+                        print("* There are no requests to chat with you.")
+                        continue
 
-                    case "accept":
-                        if not param:
-                            print(text_commands["accept"])
-                            continue
+                    print("* The following users have sent a request to chat with you:")
+                    for request in self.requests_list:
+                        print(f"> {request[1]}")
 
-                        req = convert_operation_to_code("accept_chat_request") + "#" + param
-                    case "exit":
-                        running = False
+                case "accept":
+                    if not param:
+                        print(text_commands["accept"])
+                        continue
 
-                        # We should let the server know that a user have disconnected
-                        req = convert_operation_to_code("quit") + "#" + self.username
-                    case _:
+                    user = None
+                    for request in self.chat_requests:
+                        if request[1] == param:
+                            user = request
+                            break
+
+                    if not user:
+                        print("* This user didn't sent you a request to chat with you. To see if someone had sent"
+                              "you a chat request type \"requests\".")
+                        continue
+
+                    req = convert_operation_to_code("accept_chat_request") + "#" + user[0] + ":" + user[1]
+                    req_encrypted = aes_encrypt_str(req, secret_key)
+                    soc.sendall(req_encrypted)
+
+                    res = self.__receive_res_from_req__()
+                    if res:
+                        print(f"* You will be connected to {param} soon.")
+                        self.partner_name = param
+                    else:
+                        print(f"* {param} is no longer online, or they had reconnected.")
+
+                case "exit":
+                    self.cut_connection_to_server.set()
+                    soc.close()
+                    break
+
+                case _:
+                    if not self.cut_connection_to_server.is_set():
                         print("* Invalid command! Type \"help\" to see the available commands...")
-
-            except KeyboardInterrupt:
-                running = False
 
     def __check_host_availability__(self) -> bool:
         """

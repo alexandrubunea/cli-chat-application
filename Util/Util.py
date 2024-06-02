@@ -82,10 +82,22 @@ def convert_operation_to_code(operation: str) -> str:
             return "5"
         case "accept_chat_request":
             return "6"
-        case "quit":
-            return "7"
         case "receive_chat_request":
+            return "7"
+        case "transform_to_host":
             return "8"
+        case "request_access_port":
+            return "9"
+        case "send_access_port":
+            return "10"
+        case "receive_access_port":
+            return "11"
+        case "receive_ip":
+            return "12"
+        case "close_connection":
+            return "13"
+        case "ready":
+            return "14"
 
 
 def convert_code_to_operation_str(code: str) -> str:
@@ -105,9 +117,21 @@ def convert_code_to_operation_str(code: str) -> str:
         case "6":
             return "accept_chat_request"
         case "7":
-            return "quit"
-        case "8":
             return "receive_chat_request"
+        case "8":
+            return "transform_to_host"
+        case "9":
+            return "request_access_port"
+        case "10":
+            return "send_access_port"
+        case "11":
+            return "receive_access_port"
+        case "12":
+            return "receive_ip"
+        case "13":
+            return "close_connection"
+        case "14":
+            return "ready"
 
 
 def generate_random_sha_256() -> str:
