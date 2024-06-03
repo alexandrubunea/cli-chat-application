@@ -122,7 +122,7 @@ class Client:
 
         if self.is_host:
             try:
-                soc.bind(("127.0.0.1", self.client_port))
+                soc.bind(("0.0.0.0", self.client_port))
             except socket.error as e:
                 print(f"* Error occured while trying to create the chat connection: {e}")
                 return
