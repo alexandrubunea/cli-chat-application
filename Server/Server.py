@@ -3,6 +3,7 @@ Server program for the CLI Chat Application
 
 Author: Bunea Alexandru
 """
+import argparse
 import asyncio
 import secrets
 
@@ -12,7 +13,7 @@ from Util.Util import sha_256_int, aes_decrypt_to_str, convert_code_to_operation
 
 
 class Server:
-    def __init__(self, host: str = "127.0.0.1", port: int = 1712, max_clients_allowed: int = 100, debug: bool = True):
+    def __init__(self, host: str, port: int, max_clients_allowed: int, debug: bool):
         """
         Initialize the server.
         :param host: Host of the server.
@@ -100,7 +101,7 @@ class Server:
                                           f"closing the connection")
 
                 data = aes_decrypt_to_str(raw_data, sha_256_secret_key)
-                cmd, param = None, None
+                cmd, param = "", ""
 
                 if "#" in data:
                     cmd, param = data.split("#", 1)
@@ -199,7 +200,10 @@ class Server:
 
                     case "ready":
                         # This mean the user is ready to close and connect to the host
+                        self.__disconnect_user__(user_peername, user_identity, current_username)
                         await self.__send_disconnect_signal__(writer, sha_256_secret_key)
+
+                        break
 
                     case "send_access_port":
                         if not param:
@@ -211,6 +215,11 @@ class Server:
                         self.identities[user_identity] = (current_username, param)
 
                         self.__print_debug__(f"Port {param} received from user {current_username}.")
+
+                        # Send a signal to the client to disconnect from the server
+                        await self.__send_disconnect_signal__(writer, sha_256_secret_key)
+
+                        break
 
         except ConnectionError:  # The user had disconnect, remove him from the lists
             self.__disconnect_user__(user_peername, user_identity, current_username)
@@ -264,8 +273,8 @@ class Server:
 
         port = self.identities[identity][1]
 
-        # Send a signal to the client to disconnect from the server
-        await self.__send_disconnect_signal__(writer, sha_256_secret_key)
+        # After sending the ip, port, user can be disconnected
+        self.__disconnect_user__(writer.get_extra_info("peername"), identity, username)
 
         return ip, port
 
@@ -375,6 +384,14 @@ class Server:
             print(f"[DEBUG]: {msg}")
 
 
-if __name__ == "__main__":
-    zerver = Server()
-    zerver.start()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Server for handling client connections")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Server host address (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=1712, help="Server port (default: 1712)")
+    parser.add_argument("--max_clients_allowed", type=int, default=100, help="Maximum clients allowed (default: 100)")
+    parser.add_argument("--debug", action="store_true", default=True, help="Enable debug mode (default: True)")
+
+    args = parser.parse_args()
+
+    the_server = Server(host=args.host, port=args.port, max_clients_allowed=args.max_clients_allowed, debug=args.debug)
+    the_server.start()
