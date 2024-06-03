@@ -76,3 +76,13 @@ There is a compatibility issue in Linux based operating systems, on the client s
 Author: Bunea Alexandru <br>
 Thanks to the developers and maintainers of the libraries used in this project.<br>
 Feel free to raise any issues or pull requests on the GitHub repository.
+
+## Images
+### Bob's client
+![bob-client](https://i.imgur.com/bVkK2Qu.png)
+### Alice's client
+![alice-client](https://i.imgur.com/8unDmex.png)
+### Server Log
+![server](https://i.imgur.com/xDAQQNT.png)
+### Bob and Alice chatting
+![bob-alice-chat](https://i.imgur.com/LMWBER1.png)
