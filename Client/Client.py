@@ -158,8 +158,11 @@ class Client:
         listen_thread.start()
         send_thread.start()
 
-        listen_thread.join()
-        send_thread.join()
+        try:
+            listen_thread.join()
+            send_thread.join()
+        except KeyboardInterrupt:
+            pass
 
     def __listen_chat__(self, soc: socket.socket, secret_key: bytes) -> None:
         """
@@ -537,5 +540,5 @@ class Client:
 
 
 if __name__ == "__main__":
-    client = Client("127.0.0.1", 1712, 1716)
+    client = Client("0.0.0.0", 1712, 5245)
     client.start()

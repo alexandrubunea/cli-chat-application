@@ -5,7 +5,6 @@ Author: Bunea Alexandru
 """
 import asyncio
 import secrets
-import time
 
 from Security.DHKeys import P_KEY, G_KEY
 from Util.Util import sha_256_int, aes_decrypt_to_str, convert_code_to_operation_str, convert_operation_to_code, \
@@ -200,10 +199,7 @@ class Server:
 
                     case "ready":
                         # This mean the user is ready to close and connect to the host
-                        self.__disconnect_user__(user_peername, user_identity, current_username)
                         await self.__send_disconnect_signal__(writer, sha_256_secret_key)
-
-                        break
 
                     case "send_access_port":
                         if not param:
@@ -215,11 +211,6 @@ class Server:
                         self.identities[user_identity] = (current_username, param)
 
                         self.__print_debug__(f"Port {param} received from user {current_username}.")
-
-                        # Send a signal to the client to disconnect from the server
-                        await self.__send_disconnect_signal__(writer, sha_256_secret_key)
-
-                        break
 
         except ConnectionError:  # The user had disconnect, remove him from the lists
             self.__disconnect_user__(user_peername, user_identity, current_username)
@@ -273,8 +264,8 @@ class Server:
 
         port = self.identities[identity][1]
 
-        # After sending the ip, port, user can be disconnected
-        self.__disconnect_user__(writer.get_extra_info("peername"), identity, username)
+        # Send a signal to the client to disconnect from the server
+        await self.__send_disconnect_signal__(writer, sha_256_secret_key)
 
         return ip, port
 
