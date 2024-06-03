@@ -3,7 +3,6 @@ Client program for the CLI Chat Application
 
 Author: Bunea Alexandru
 """
-import queue
 import secrets
 import socket
 import threading
@@ -64,6 +63,7 @@ class Client:
               "/____/\___/\___/\__,_/_/   \___/\____/_/ /_/\__,_/\__/_/  |_/ .___/ .___/ \n"
               "                                                           /_/   /_/      \n")
         print(f"* Trying to connect you to the host [{self.host}:{self.host_port}]")
+        print(f"* Consider that if you can't connect to the server it may be full.")
         self.__check_host_availability__()
         self.__establish_connection__()
 
@@ -529,7 +529,7 @@ class Client:
         :return: true if the server is up, false otherwise
         """
         try:
-            with socket.create_connection((self.host, self.host_port), 5):
+            with socket.create_connection((self.host, self.host_port), 1):
                 return True
         except (socket.timeout, socket.error) as e:
             print(f"* Failed to connect to {self.host}:{self.host_port}: {e}")

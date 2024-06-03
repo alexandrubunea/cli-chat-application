@@ -27,6 +27,7 @@ class Server:
         self.port = port
         self.max_clients_allowed = max_clients_allowed
         self.debug = debug
+        self.current_connections = 0
 
         # Diffie-Hellman
         self.private_key = secrets.randbits(4096)  # Generates a number for the secret key
@@ -74,9 +75,16 @@ class Server:
         :param writer: Writer used for sending data.
         :return: None
         """
+        user_peername = writer.get_extra_info("peername")
+
+        self.current_connections += 1
+        if self.current_connections >= self.max_clients_allowed:
+            self.__print_debug__(f"Maximum number of connections allowed is {self.max_clients_allowed}")
+            self.__print_debug__(f"{user_peername} have been disconnected.")
+            return
+
         sha_256_secret_key = await self.__secure_connection__(reader, writer)
         user_identity = generate_random_sha_256()  # Gives the user an identity, to avoid confusions in the future
-        user_peername = writer.get_extra_info("peername")
         current_username = "0"
 
         if sha_256_secret_key == b'0':  # This means it was just an availability check, connection can be dropped
