@@ -3,10 +3,13 @@ Client program for the CLI Chat Application
 
 Author: Bunea Alexandru
 """
+import queue
 import secrets
 import socket
 import threading
 import time
+from blessed import Terminal
+from collections import deque
 
 from Security.DHKeys import P_KEY, G_KEY
 from Util.Util import sha_256_int, aes_encrypt_str, convert_operation_to_code, aes_decrypt_to_str, \
@@ -35,6 +38,9 @@ class Client:
         self.cut_connection_to_server = threading.Event()
         self.chat_mode = False
         self.partner_name = None
+        self.inactive_chat = threading.Event()
+        self.messages_terminal = deque(maxlen=30)  # I think the 30 latest messages are enough
+        self.term = Terminal()
 
         # Diffie-Hellman
         self.private_key = secrets.randbits(4096)  # Generates a number for the secret key
@@ -60,6 +66,165 @@ class Client:
         print(f"* Trying to connect you to the host [{self.host}:{self.host_port}]")
         self.__check_host_availability__()
         self.__establish_connection__()
+
+    def __display_messages__(self) -> None:
+        """
+        Displays the messages in the terminal.
+        :return: None
+        """
+        for row, msg in enumerate(self.messages_terminal):
+            with self.term.location(0, row):
+                print(self.term.clear_eol() + msg)
+
+    def __secure_connection__(self, soc: socket.socket) -> bytes:
+        """
+        Secure the connection with the server, or another client using Diffie-Hellman Key Exchange
+        :param soc: Socket of the client.
+        :return: A secure key in hashed in SHA-256.
+        """
+        # Sharing keys
+        packed_key = self.public_key.to_bytes(
+            513,
+            byteorder="big"
+        )
+        if not self.is_host:
+            soc.sendall(packed_key)
+
+        raw_data = soc.recv(513)
+
+        if self.is_host:
+            soc.sendall(packed_key)
+
+        server_public_key = int.from_bytes(raw_data, byteorder="big")
+        secret_key = pow(server_public_key, self.private_key, P_KEY)  # Using Diffie-Hellman
+        sha_256_secret_key = sha_256_int(secret_key)
+
+        return sha_256_secret_key
+
+    """
+    ============= Client-To-Client ===========
+    """
+
+    def __chat__(self):
+        """
+        Handles the chat between two users
+        :return: None
+        """
+        soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        if self.is_host:
+            try:
+                soc.bind(("127.0.0.1", self.client_port))
+            except socket.error as e:
+                print(f"* Error occured while trying to create the chat connection: {e}")
+                return
+
+            soc.listen()
+            partner_socket, _ = soc.accept()
+            secret_key = self.__secure_connection__(partner_socket)
+
+            listen_thread = threading.Thread(target=self.__listen_chat__, args=(partner_socket, secret_key))
+            send_thread = threading.Thread(target=self.__send_chat__, args=(partner_socket, secret_key))
+
+        else:
+            keep_trying = True
+
+            try:
+                while keep_trying:
+                    try:
+                        soc.connect((self.host, self.host_port))
+                        keep_trying = False
+                    except (socket.timeout, socket.error):
+                        print("* Couldn't reach the host, trying again...")
+                        time.sleep(3)
+            except KeyboardInterrupt:
+                return
+
+            secret_key = self.__secure_connection__(soc)
+
+            listen_thread = threading.Thread(target=self.__listen_chat__, args=(soc, secret_key))
+            send_thread = threading.Thread(target=self.__send_chat__, args=(soc, secret_key))
+
+        if not secret_key:
+            print("* A secure connection couldn't be established. Closing the application...")
+            return
+
+        if not listen_thread or not send_thread:
+            print("* Couldn't create the threads for communication. Closing the application...")
+            return
+
+        self.messages_terminal.append("* A secure connection has been established. You can start chatting now.")
+
+        listen_thread.start()
+        send_thread.start()
+
+        listen_thread.join()
+        send_thread.join()
+
+    def __listen_chat__(self, soc: socket.socket, secret_key: bytes) -> None:
+        """
+        Listens for the messages sent by the other user.
+        :param soc: Socket to listen.
+        :param secret_key: Secret key used to decrypt the message.
+        :return: None
+        """
+
+        while not self.inactive_chat.is_set():
+            try:
+                encrypted_msg = soc.recv(8192)
+                msg = aes_decrypt_to_str(encrypted_msg, secret_key)
+                self.messages_terminal.append(f"{self.partner_name}: {msg}")
+
+            except (socket.timeout, socket.error):
+                if not self.inactive_chat.is_set():
+                    self.messages_terminal.append(f"* Connection closed by {self.partner_name}.")
+                    self.__display_messages__()
+                    soc.close()
+
+                    time.sleep(3)
+                    self.inactive_chat.set()
+
+    def __send_chat__(self, soc: socket.socket, secret_key: bytes) -> None:
+        """
+        Sends the message to the other user.
+        :param soc: Socket to send.
+        :param secret_key: Secret key used to encrypt the message.
+        :return: None
+        """
+        with self.term.fullscreen(), self.term.cbreak(), self.term.hidden_cursor():
+            input_line = ""
+            while not self.inactive_chat.is_set():
+                self.__display_messages__()
+                with self.term.location(0, self.term.height - 1):
+                    print(self.term.clear_eol() + "> " + input_line, end='', flush=False)
+
+                try:
+                    inp = self.term.inkey(timeout=0.1)
+
+                    if inp:
+                        if inp.name == "KEY_ENTER" and len(input_line):
+                            encrypted_msg = aes_encrypt_str(input_line, secret_key)
+                            soc.sendall(encrypted_msg)
+
+                            self.messages_terminal.append(f"You: {input_line}")
+                            input_line = ""
+                        elif inp.name == "KEY_BACKSPACE" and len(input_line):
+                            input_line = input_line[:-1]
+                        else:
+                            input_line += inp
+
+                except (socket.timeout, socket.error):
+                    if not self.inactive_chat.is_set():
+                        self.messages_terminal.append(f"* Connection closed by {self.partner_name}.")
+                        self.inactive_chat.set()
+                        soc.close()
+
+                        self.__display_messages__()
+                        time.sleep(3)
+
+    """
+    ============= Client-To-Server ===========
+    """
 
     def __establish_connection__(self):
         soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -89,60 +254,6 @@ class Client:
 
         if self.chat_mode:
             self.__chat__()
-
-    def __chat__(self):
-        """
-        Handles the chat between two users
-        :return: None
-        """
-        soc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        if self.is_host:
-            try:
-                soc.bind(("127.0.0.1", self.client_port))
-            except socket.error as e:
-                print(f"* Error occured while trying to create the chat connection: {e}")
-                return
-
-            soc.listen()
-            partner_socket, _ = soc.accept()
-            data = partner_socket.recv(1024)
-            print(data.decode("UTF-8"))
-
-        else:
-            keep_trying = True
-
-            try:
-                while keep_trying:
-                    try:
-                        soc.connect((self.host, self.host_port))
-                        keep_trying = False
-                    except (socket.timeout, socket.error):
-                        print("* Couldn't reach the host, trying again...")
-                        time.sleep(3)
-            except KeyboardInterrupt:
-                return
-
-            soc.sendall("TEST".encode("UTF-8"))
-
-    def __secure_connection__(self, soc: socket.socket) -> bytes:
-        """
-        Secure the connection with the server, or another client using Diffie-Hellman Key Exchange
-        :param soc: Socket of the client.
-        :return: A secure key in hashed in SHA-256.
-        """
-        # Sharing keys
-        packed_key = self.public_key.to_bytes(
-            513,
-            byteorder="big"
-        )
-        soc.sendall(packed_key)
-        raw_data = soc.recv(513)
-        server_public_key = int.from_bytes(raw_data, byteorder="big")
-        secret_key = pow(server_public_key, self.private_key, P_KEY)  # Using Diffie-Hellman
-        sha_256_secret_key = sha_256_int(secret_key)
-
-        return sha_256_secret_key
 
     def __listen_to_server__(self, soc: socket.socket, secret_key: bytes) -> None:
         """
@@ -296,7 +407,7 @@ class Client:
             in_keyboard = in_raw.lower()
 
             if " " in in_keyboard:
-                cmd, param = in_keyboard.split(" ")
+                cmd, param = in_keyboard.split(" ", 1)
             else:
                 cmd = in_keyboard
                 param = None
