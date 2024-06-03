@@ -3,6 +3,7 @@ Client program for the CLI Chat Application
 
 Author: Bunea Alexandru
 """
+import argparse
 import secrets
 import socket
 import threading
@@ -16,7 +17,7 @@ from Util.Util import sha_256_int, aes_encrypt_str, convert_operation_to_code, a
 
 
 class Client:
-    def __init__(self, host: str, host_port: int, client_port: int = 1713):
+    def __init__(self, host: str, host_port: int, client_port):
         """
         Initialize the client.
         :param host: Host to connect.
@@ -158,11 +159,8 @@ class Client:
         listen_thread.start()
         send_thread.start()
 
-        try:
-            listen_thread.join()
-            send_thread.join()
-        except KeyboardInterrupt:
-            pass
+        listen_thread.join()
+        send_thread.join()
 
     def __listen_chat__(self, soc: socket.socket, secret_key: bytes) -> None:
         """
@@ -539,6 +537,13 @@ class Client:
             return False
 
 
-if __name__ == "__main__":
-    client = Client("0.0.0.0", 1712, 5245)
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Client for connecting to a server")
+    parser.add_argument("--host", type=str, help="Server host address")
+    parser.add_argument("--host_port", type=int, help="Server port")
+    parser.add_argument("--client_port", type=int, default=1713, help="Client port (default: 1713)")
+
+    args = parser.parse_args()
+
+    client = Client(host=args.host, host_port=args.host_port, client_port=args.client_port)
     client.start()
